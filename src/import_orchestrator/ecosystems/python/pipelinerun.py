@@ -53,6 +53,7 @@ def build_pipelinerun_manifest(
     builds_tag: str | None = None,
     fix_type: str = "Backport",
     wheel_server_url: str | None = None,
+    require_vuln: bool = True,
 ) -> dict[str, Any]:
     """Build a python-remediated-build PipelineRun manifest for one package/version.
 
@@ -74,7 +75,13 @@ def build_pipelinerun_manifest(
     # Push to the Konflux component repository (<tenant>/<application>/<component>),
     # which is the only repo the build service account can push to. The package and
     # version are encoded in the tag rather than a per-package repo.
-    image = f"{image_repo_base}/{application}/{component}:{package}-{version}"
+    # LOCAL SPIKE: when URL override is set, IMAGE_REPO_BASE is the full IR repo.
+    if getattr(config, "LIGHTWELL_BUILDS_REPO_URL_OVERRIDE", None):
+        image = f"{image_repo_base}:{package}-{version}"
+        repo_url = config.LIGHTWELL_BUILDS_REPO_URL_OVERRIDE
+    else:
+        image = f"{image_repo_base}/{application}/{component}:{package}-{version}"
+        repo_url = f"{repo_base}/pypi.org-{package}"
     tag = builds_tag or f"{package}/{version}"
     spec: dict[str, Any] = {
         "pipelineSpec": pipeline_spec,
@@ -82,13 +89,17 @@ def build_pipelinerun_manifest(
             {"name": "PACKAGE", "value": package},
             {"name": "VERSION", "value": version},
             {"name": "FIX_TYPE", "value": fix_type},
-            {"name": "LIGHTWELL_BUILDS_REPO_URL", "value": f"{repo_base}/pypi.org-{package}"},
+            {"name": "LIGHTWELL_BUILDS_REPO_URL", "value": repo_url},
             {"name": "LIGHTWELL_BUILDS_TAG", "value": tag},
             {"name": "IMAGE", "value": image},
             {"name": "ociStorage", "value": f"{image}.src"},
             {"name": "WHEEL_SERVER_URL", "value": wheel_server_url or config.WHEEL_SERVER_URL},
             {"name": "BUILD_CONFIGS_REPO_URL", "value": get_build_config_source()},
             {"name": "BUILD_CONFIGS_REVISION", "value": get_build_config_revision()},
+            {
+                "name": "REQUIRE_VULN",
+                "value": "true" if require_vuln else "false",
+            },
         ],
         "workspaces": [
             {"name": "git-auth", "secret": {"secretName": git_auth_secret}},

@@ -18,9 +18,10 @@ limitations under the License.
 # Default configuration constants for the import orchestrator.
 # ---------------------------------------------------------------------------
 
-NAMESPACE = "lightwell-poc-tenant"
-CLUSTER_API = "https://api.stone-prod-p01.wcfb.p1.openshiftapps.com:6443"
-KUBEARCHIVE_API = "https://kubearchive-api-server-product-kubearchive.apps.stone-prod-p01.wcfb.p1.openshiftapps.com"
+# LOCAL SPIKE (KONFLUX-15844) — kflux-lw-p01. Do not push.
+NAMESPACE = "konflux-perfscale-3-tenant"
+CLUSTER_API = "https://da837cbw0di4ab97asm0.vpe.private.us-east.containers.cloud.ibm.com:31533"
+KUBEARCHIVE_API = "https://kubearchive-api-server-product-kubearchive.kflux-lw-p01-23c2640bcea594f87bc757d4116925b2-0000.us-east.containers.appdomain.cloud"
 
 DEFAULT_MAX_PARALLEL = 1
 DEFAULT_POLL_INTERVAL = 30  # seconds

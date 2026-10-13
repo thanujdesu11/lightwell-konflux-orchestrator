@@ -102,6 +102,11 @@ class TestBuildManifest:
         assert params["WHEEL_SERVER_URL"] == "https://packages.redhat.com/lightwell/python/validated/simple/"
         assert params["BUILD_CONFIGS_REPO_URL"] == "https://example.test/build-configs.git"
         assert params["BUILD_CONFIGS_REVISION"] == "main"
+        assert params["REQUIRE_VULN"] == "true"
+
+    def test_require_vuln_false_param(self):
+        params = {p["name"]: p["value"] for p in _manifest(require_vuln=False)["spec"]["params"]}
+        assert params["REQUIRE_VULN"] == "false"
 
     def test_build_config_revision_is_configurable(self, monkeypatch):
         monkeypatch.setenv("BUILD_CONFIGS_REVISION", "review-ref")

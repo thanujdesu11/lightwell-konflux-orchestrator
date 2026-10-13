@@ -54,6 +54,7 @@ class PythonEcosystem:
             builds_tag=builds_tag,
             fix_type=fix_type,
             wheel_server_url=getattr(args, "wheel_server_url", None),
+            require_vuln=bool(cfg.get("require_vuln", True)),
         )
         return apply_pipeline_overrides(manifest, pipeline_path)
 

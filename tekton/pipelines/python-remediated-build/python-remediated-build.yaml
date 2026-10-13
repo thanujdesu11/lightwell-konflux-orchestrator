@@ -26,7 +26,8 @@ spec:
          vuln IDs from the ADR-0005 Lightwell-Fix commit trailers) and attach it
          to the wheels image as an OCI referrer
          (application/vnd.lightwell.build-index.v1+json) for release-side OSV
-         generation. Fails closed if no vuln IDs resolve.
+         generation. Fails closed if no vuln IDs resolve when REQUIRE_VULN=true.
+         SCRATCH / clean builds pass REQUIRE_VULN=false so the step still runs.
 
     The lightwell-builds repo stores each validated package version as a tagged commit
     with source content in source/ and SLSA provenance in .lightwell/metadata.json.
@@ -108,6 +109,14 @@ spec:
       description: The name of the key in the ConfigMap that contains the CA bundle data.
       type: string
       default: ca-bundle.crt
+
+    - name: REQUIRE_VULN
+      description: >-
+        Passed through to attach-build-index. "true" fails closed without vuln
+        IDs; "false" allows clean / SCRATCH builds (LOCAL SPIKE: taskSpec
+        embedded in this pipeline, not the catalog bundle).
+      type: string
+      default: "true"
 
   workspaces:
     - name: git-auth
@@ -263,43 +272,218 @@ spec:
         - fromager-build-wheels
 
     # ── Step 5: Attach build-index.json OCI referrer for release OSV gen ──────
-    # Emits a build-index.json (purl + remediated version + vuln IDs, resolved
-    # from the ADR-0005 Lightwell-Fix commit trailers) and attaches it to the
-    # wheels image as an OCI referrer (media type
-    # application/vnd.lightwell.build-index.v1+json) so the release-side
-    # generate-py-osv task (LWLP-1253) can discover it. Fails closed if no vuln
-    # IDs resolve. See tekton/tasks/attach-build-index/0.1/attach-build-index.yaml.
-    #
-    # Pinned to the released bundle in the external shared catalog
-    # quay.io/konflux-ci/tekton-catalog/task-attach-build-index (promoted from
-    # the lightwell-poc-tenant namespace by the auto-release ReleasePlan/RPA
-    # onboarded in konflux-release-data), matching the source-to-sdist peer.
-    # To pick up a task change: merge it (fires .tekton/attach-build-index-push.yaml
-    # → build+push → auto-release), then re-pin the digest below at :0.1.
+    # LOCAL SPIKE (KONFLUX-15844): embed patched attach-build-index taskSpec with
+    # REQUIRE_VULN (cannot create Tasks in-tenant). Do not push upstream.
+    # Source of truth for the patch: tekton/tasks/attach-build-index/0.1/attach-build-index.yaml
+
     - name: attach-build-index
-      taskRef:
-        resolver: bundles
-        params:
-          - name: bundle
-            value: quay.io/konflux-ci/tekton-catalog/task-attach-build-index:0.1@sha256:b0e9f66ca97f76adad133ca6a498b0a09ff9d13eb3f97941733f7b729f79fabc
-          - name: name
-            value: attach-build-index
-          - name: kind
-            value: task
       runAfter:
-        - fromager-build-wheels
+      - fromager-build-wheels
       params:
+      - name: SOURCE_ARTIFACT
+        value: $(tasks.clone-lightwell-builds.results.SOURCE_ARTIFACT)
+      - name: IMAGE_REF
+        value: $(tasks.fromager-build-wheels.results.IMAGE_REF)
+      - name: PACKAGE
+        value: $(params.PACKAGE)
+      - name: VERSION
+        value: $(params.VERSION)
+      - name: COMPUTED_VERSION
+        value: $(tasks.source-to-sdist.results.COMPUTED_VERSION)
+      - name: REQUIRE_VULN
+        value: $(params.REQUIRE_VULN)
+      - name: caTrustConfigMapName
+        value: $(params.caTrustConfigMapName)
+      - name: caTrustConfigMapKey
+        value: $(params.caTrustConfigMapKey)
+      taskSpec:
+        description: 'Generate a build-index.json for a remediated Python build and attach it to the component
+          image as an OCI referrer (media type application/vnd.lightwell.build-index.v1+json), so the release-side
+          generate-py-osv task (LWLP-1253) can discover it with `oras discover` and hand it to slan-cuan for
+          OSV record generation.
+
+          The primary PURL, the remediated version, and the vulnerability IDs are derived from the ADR-0005
+          `Lightwell-Fix:` commit trailers on the checked-out lightwell-builds source (restored from SOURCE_ARTIFACT,
+          whose HEAD is the tagged cumulative-patch commit). When REQUIRE_VULN is "true" (default), the task
+          fails closed (`--require-vuln`): a remediated build with no resolvable vulnerability IDs is a hard
+          error rather than an index that silently ships `vulns: []`. Set REQUIRE_VULN to "false" for clean
+          / SCRATCH builds.'
+        params:
+        - name: REQUIRE_VULN
+          description: When "true", pass --require-vuln to fath-cuan (fail if no vuln IDs). When "false",
+            allow clean builds with empty vulns (SCRATCH / probe).
+          type: string
+          default: 'true'
         - name: SOURCE_ARTIFACT
-          value: $(tasks.clone-lightwell-builds.results.SOURCE_ARTIFACT)
+          description: Trusted Artifact URI of the cloned lightwell-builds source tree, as produced by the
+            pipeline's git-clone-oci-ta step. Must include the .git directory so the ADR-0005 Lightwell-Fix
+            trailers can be read from the HEAD (tagged) commit — the same artifact source-to-sdist consumes
+            for its `git archive`, so .git is guaranteed present.
+          type: string
         - name: IMAGE_REF
-          value: $(tasks.fromager-build-wheels.results.IMAGE_REF)
+          description: Digest-pinned reference (repo@sha256:...) of the wheels component image the build-index
+            referrer is attached to. Digest-pinning guarantees the referrer lands on exactly the image that
+            was built.
+          type: string
         - name: PACKAGE
-          value: $(params.PACKAGE)
+          description: Canonical Python package name (PEP 503 normalized, hyphens only), used to construct
+            the pkg:pypi PURL.
+          type: string
         - name: VERSION
-          value: $(params.VERSION)
+          description: Upstream package version. Recorded as build-index version.upstream and used as the
+            PURL/OSV upstream base; must differ from COMPUTED_VERSION.
+          type: string
         - name: COMPUTED_VERSION
-          value: $(tasks.source-to-sdist.results.COMPUTED_VERSION)
+          description: Full remediated (PEP 440 local) version, e.g. 3.0.1+rhlw.1. Recorded as version.full
+            and used as the PURL version, so primaryPurl matches version.full (enforced by the BuildIndex
+            schema).
+          type: string
         - name: caTrustConfigMapName
-          value: $(params.caTrustConfigMapName)
+          description: The name of the ConfigMap to read CA bundle data from.
+          type: string
+          default: trusted-ca
         - name: caTrustConfigMapKey
-          value: $(params.caTrustConfigMapKey)
+          description: The name of the key in the ConfigMap that contains the CA bundle data.
+          type: string
+          default: ca-bundle.crt
+        results:
+        - name: BUILD_INDEX_ATTACHED_REF
+          description: The component image reference the build-index referrer was attached to (repo@sha256:...).
+            Empty if nothing was attached.
+        stepTemplate:
+          env:
+          - name: IMAGE_REF
+            value: $(params.IMAGE_REF)
+          volumeMounts:
+          - mountPath: /mnt/trusted-ca
+            name: trusted-ca
+            readOnly: true
+        steps:
+        - name: use-source-artifact
+          image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:9bd32f6bafb517b309e11a2d89365052b4ab3f1c9c23c4ffd45aff6f03960476
+          computeResources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 512Mi
+          volumeMounts:
+          - mountPath: /var/workdir
+            name: workdir
+          args:
+          - use
+          - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+        - name: create-and-attach
+          image: quay.io/light-factory/fath-cuan@sha256:5b92eb14431ebb3489bc48e57c5ec3ab88397204a0ae1a16261be0b21ca1adce
+          computeResources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 512Mi
+          volumeMounts:
+          - mountPath: /var/workdir
+            name: workdir
+          script: |
+            #!/bin/bash
+            set -euo pipefail
+
+            ca_bundle=/mnt/trusted-ca/ca-bundle.crt
+            if [ -f "$ca_bundle" ]; then
+              export SSL_CERT_FILE="$ca_bundle"
+              export REQUESTS_CA_BUNDLE="$ca_bundle"
+            fi
+
+            if [[ "$IMAGE_REF" != *@sha256:* ]]; then
+              echo "ERROR: IMAGE_REF must be digest-pinned (contain @sha256:)" >&2
+              exit 1
+            fi
+
+            SRC=/var/workdir/source
+            if [ ! -d "$SRC/.git" ]; then
+              echo "ERROR: restored source at $SRC has no .git directory;" >&2
+              echo "       cannot read ADR-0005 Lightwell-Fix trailers for --require-vuln" >&2
+              exit 1
+            fi
+
+            PURL="pkg:pypi/$(params.PACKAGE)@$(params.COMPUTED_VERSION)"
+            echo "Generating build-index for ${PURL} (upstream $(params.VERSION))"
+
+            # Extract backport (b) and novel (n) counts from COMPUTED_VERSION (+rhlw.<B>[.n.<N>])
+            B=0
+            N=0
+            if [[ "$(params.COMPUTED_VERSION)" =~ \+rhlw\.([0-9]+)(\.n\.?([0-9]+))? ]]; then
+              B="${BASH_REMATCH[1]}"
+              [ -n "${BASH_REMATCH[3]:-}" ] && N="${BASH_REMATCH[3]}"
+            fi
+
+            # Step 1 — generate build-index.json ONLY (no --attach-to). This is fully
+            # offline: fath-cuan reads the ADR-0005 Lightwell-Fix trailers from
+            # $SRC/.git and writes the document. It never touches the registry here, so
+            # it needs no credentials — all registry auth is confined to the attach below.
+            #
+            # REQUIRE_VULN=true: fail closed if no vuln IDs resolve from the trailers.
+            # REQUIRE_VULN=false: clean / SCRATCH builds may ship vulns: [].
+            REQUIRE_VULN_ARGS=()
+            if [ "$(params.REQUIRE_VULN)" = "true" ]; then
+              REQUIRE_VULN_ARGS+=(--require-vuln)
+            fi
+
+            fath-cuan index create \
+              --ecosystem pypi \
+              --purl "$PURL" \
+              --version-upstream "$(params.VERSION)" \
+              --version-local "$(params.COMPUTED_VERSION)" \
+              --b "$B" \
+              --n "$N" \
+              --git-dir "$SRC" \
+              "${REQUIRE_VULN_ARGS[@]}" \
+              --output /var/workdir/build-index.json
+
+            echo "--- build-index.json ---"
+            cat /var/workdir/build-index.json
+            echo
+
+            # Step 2 — attach build-index.json to IMAGE_REF as an OCI referrer via the
+            # oras CLI, NOT fath-cuan's --attach-to. fath-cuan attaches through oras-py
+            # 0.2.42 (shipped in this image), which reuses the *pull*-scoped bearer
+            # token it obtains while HEAD-resolving the subject for the subsequent
+            # referrer blob push; quay then rejects that push with UNAUTHORIZED. The
+            # oras CLI requests push scope per-operation and succeeds. This is the same
+            # select-oci-auth + `oras --registry-config` pattern that
+            # python-fromager-build-wheels uses to push to this very repo.
+            #
+            # The pipeline SA's quay secrets (imagerepository-*-image-push,
+            # components-namespace-pull) carry no `tekton.dev/docker-*` annotation, so
+            # creds-init never lands usable quay auth in $HOME/.docker/config.json —
+            # hence select-oci-auth to materialize a config.json scoped to IMAGE_REF.
+            #
+            # artifact-type and the attached file's basename form the downstream
+            # contract: generate-py-osv (release-service-catalog) finds this referrer
+            # with `oras discover --artifact-type <BUILD_INDEX_MEDIA_TYPE>` and extracts
+            # it with `oras pull -o <dir>`, which writes the layer to a file named by
+            # its title annotation (the basename oras derives from the arg). It then
+            # reads <dir>/build-index.json — so the attached file MUST be build-index.json.
+            BUILD_INDEX_MEDIA_TYPE="application/vnd.lightwell.build-index.v1+json"
+
+            select-oci-auth "$IMAGE_REF" > /var/workdir/oci-auth.json
+            AUTHFILE="$(realpath /var/workdir/oci-auth.json)"
+
+            cd /var/workdir
+            echo "Attaching build-index referrer to ${IMAGE_REF}"
+            oras attach "$IMAGE_REF" \
+              --registry-config "$AUTHFILE" \
+              --artifact-type "$BUILD_INDEX_MEDIA_TYPE" \
+              "build-index.json:${BUILD_INDEX_MEDIA_TYPE}"
+
+            echo -n "$IMAGE_REF" | tee "$(results.BUILD_INDEX_ATTACHED_REF.path)"
+        volumes:
+        - configMap:
+            items:
+            - key: $(params.caTrustConfigMapKey)
+              path: ca-bundle.crt
+            name: $(params.caTrustConfigMapName)
+            optional: true
+          name: trusted-ca
+        - emptyDir: {}
+          name: workdir

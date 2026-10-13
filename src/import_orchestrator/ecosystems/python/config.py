@@ -20,7 +20,9 @@ import os
 from pathlib import Path
 
 PYTHON_DEFAULT_DB_PATH = "./python_import_state.db"
-NAMESPACE = "lightwell-python-tenant"
+
+# LOCAL SPIKE (KONFLUX-15844) — kflux-lw-p01 / perfscale-3. Do not push.
+NAMESPACE = "konflux-perfscale-3-tenant"
 PIPELINERUN_PREFIX = "python-remediated-build-"
 
 # Build targets, keyed by target name. Each supplies the Konflux application and
@@ -37,21 +39,29 @@ TARGET_CONFIGS: dict[str, dict] = {
         "component": "scratch-build",
         "service_account": "build-pipeline-scratch-build",
         "skip_release": True,
+        # Clean / probe: run attach-build-index but do not pass --require-vuln
+        # (in-cluster Task spike; see pipeline taskRef).
+        "require_vuln": False,
     },
 }
-DEFAULT_TARGET = "REMEDIATED"
+DEFAULT_TARGET = "SCRATCH"
 
 # Base of the per-package lightwell-builds source repositories. Each package
 # lives at "<repo_base>/pypi.org-<package>".
 LIGHTWELL_BUILDS_REPO_BASE = "https://gitlab.cee.redhat.com/lightwell/lightwell-builds"
 
-# Base of the destination image repository. Built wheels are pushed to
-# "<image_repo_base>/<package>:<version>".
-IMAGE_REPO_BASE = "quay.io/redhat-user-workloads/lightwell-python-tenant"
+# Spike: full URL (probe source) instead of lightwell/lightwell-builds/pypi.org-*
+LIGHTWELL_BUILDS_REPO_URL_OVERRIDE = (
+    "https://gitlab.cee.redhat.com/jhutar/lw-pypi.org-ntplib-1"
+)
 
-# Secret bound to the git-auth workspace. The clone task uses it to authenticate
-# against the lightwell-builds git repositories.
-GIT_AUTH_SECRET = "lightwell-builds-git-auth"
+# Spike: full ImageRepository URL (flat). pipelinerun uses this as repo + :tag.
+IMAGE_REPO_BASE = (
+    "quay.io/redhat-user-workloads/konflux-perfscale-3-tenant/scratch-build"
+)
+
+# Spike: reuse probe git-auth secret in this namespace.
+GIT_AUTH_SECRET = "probe-build-configs-git-auth"
 
 # Wheel cache server URL pointing to the Lightwell validated Python repository.
 WHEEL_SERVER_URL = os.environ.get(
